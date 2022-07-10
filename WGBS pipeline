@@ -1,0 +1,238 @@
+ASSIGNMENT 15- WHOLE GENOME BISULFITE SEQUENCING PIPELINE
+ANTHEA TRAVAS
+SCRIPTS
+MMG3003-GENOMIC METHODOLOGY 
+FRIDAY, JULY 8TH, 2022
+
+-------------------------------------------------------------------------------------------------
+Step 1) Download FASTA file of Chr 21 Reference
+-------------------------------------------------------------------------------------------------
+cd $SCRATCH/Ref
+wget ftp://ftp.ensembl.org/pub/release-96/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.chromosome.21.fa.gz
+zcat Homo_sapiens.GRCh38.dna.chromosome.21.fa.gz | sed 's/>21/>chr21/' > Homo_sapiens.GRCh38.dna.chromosome.21.fa
+
+-------------------------------------------------------------------------------------------------
+Step 2)Index FASTA file to give the program a reference such that computation is faster
+-------------------------------------------------------------------------------------------------
+salloc
+module load anaconda3 gcc java fastqc cutadapt trimgalore bwa samtools bwameth htslib methyldackel
+bwameth.py index Homo_sapiens.GRCh38.dna.chromosome.21.fa
+
+
+-------------------------------------------------------------------------------------------------
+Step 3) Use UCSC to get the locations of CpG islands & copy them from local drive to cluster
+-------------------------------------------------------------------------------------------------
+---------------------------------------------------
+Step 3.1) UCSC Genome browser
+---------------------------------------------------
+Ucsc genome browser website>table browser
+	Parameters: group=regulation, track=CpG Islands, position=chr21, output=BED=browser extensible data
+Then hit get output. And in this tab choose whole gene and click get BED
+
+---------------------------------------------------
+Step 3.2) copy from local to cluster environment
+Note this code would be run in the local terminal 
+---------------------------------------------------
+scp ~/Downloads/hg38CpgIslandsForChr21.bed lcl_uotmmg3003s2058@teach.scinet.utoronto.ca:/scratch/l/lcl_uotmmg3003/lcl_uotmmg3003s2058/Datasets
+
+
+------------------------------------------------------------------------------------------------
+Step 4)Copy FASTA files from mehran from the WGBS experiment
+-------------------------------------------------------------------------------------------------
+cp -rf /scratch/m/mhoffman/karimzad/newFastqFilesChr21 $SCRATCH
+
+-------------------------------------------------------------------------------------------------
+Step 5) Using trim galore program to trim paired-end FASTQ files
+-------------------------------------------------------------------------------------------------
+LOGDIR=$SCRATCH/Logs # Creates a new variable 
+SCRIPTDIR=$SCRATCH/Scripts # For scripts that run different programs
+mkdir -p $SCRIPTDIR $LOGDIR # Creating multiple folders simultaneously
+cd $SCRIPTDIR # Change diretory
+FASTQDIR=$SCRATCH/newFastqFilesChr21 # PAth to our untrimmed fastq files
+FQFOLDERS=($(ls $FASTQDIR)) # Arrays
+OUTMAIN=$SCRATCH/trimmedFastqsChr21
+for FQFOLDER in ${FQFOLDERS[@]}
+do
+  FQ1=$FASTQDIR/$FQFOLDER/$FQFOLDER\__1.fastq.gz
+  FQ2=$FASTQDIR/$FQFOLDER/$FQFOLDER\__2.fastq.gz
+  OUTDIR=$OUTMAIN/$FQFOLDER
+  mkdir -p $OUTDIR
+  echo -e '#!/bin/sh' > $SCRATCH/Scripts/$FQFOLDER\_TrimGalore.sh
+  echo "module load anaconda3 gcc java fastqc cutadapt trimgalore bwa samtools bwameth htslib methyldackel" >> $SCRATCH/Scripts/$FQFOLDER\_TrimGalore.sh
+  echo "trim_galore --fastqc --paired --gzip -o $OUTDIR $FQ1 $FQ2" >> $SCRATCH/Scripts/$FQFOLDER\_TrimGalore.sh
+  sbatch -c 1 -t 1:00:00 -e $LOGDIR/$FQFOLDER\_TrimGalore.%A.ERR -o  $LOGDIR/$FQFOLDER\_TrimGalore.%A.LOG $SCRIPTDIR/$FQFOLDER\_TrimGalore.sh
+done
+
+
+------------------------------------------------------------------------------------------------
+Step 6) Copy the fastqc.html files from the cluster to my local environment so I can analyze 
+the quality. I only want the html files so I have to grab each one from their respective folder
+-------------------------------------------------------------------------------------------------
+scp lcl_uotmmg3003s2058@teach.scinet.utoronto.ca:/scratch/l/lcl_uotmmg3003/lcl_uotmmg3003s2058/trimmedFastqsChr21/H1-hESC_rep1/H1-hESC_rep1__1_val_1_fastqc.html .
+
+scp lcl_uotmmg3003s2058@teach.scinet.utoronto.ca:/scratch/l/lcl_uotmmg3003/lcl_uotmmg3003s2058/trimmedFastqsChr21/H1-hESC_rep2/H1-hESC_rep2__1_val_1_fastqc.html .
+
+scp lcl_uotmmg3003s2058@teach.scinet.utoronto.ca:/scratch/l/lcl_uotmmg3003/lcl_uotmmg3003s2058/trimmedFastqsChr21/leftVentricle_rep1/leftVentricle_rep1__2_val_2_fastqc.html .
+
+scp lcl_uotmmg3003s2058@teach.scinet.utoronto.ca:/scratch/l/lcl_uotmmg3003/lcl_uotmmg3003s2058/trimmedFastqsChr21/leftVentricle_rep2/leftVentricle_rep2__2_val_2_fastqc.html .
+
+
+-------------------------------------------------------------------------------------------------
+Step 7)Align with BWA-Meth to the Chr21 reference downloaded in Step 1
+-------------------------------------------------------------------------------------------------
+cd $SCRIPTDIR
+REF=$SCRATCH/Ref/Homo_sapiens.GRCh38.dna.chromosome.21.fa
+FASTQDIR=$SCRATCH/trimmedFastqsChr21
+BAMDIR=$SCRATCH/trimmedAlignedBamsChr21
+mkdir -p $BAMDIR
+mkdir -p $SCRIPTDIR
+SAMPLES=($(ls $FASTQDIR))
+for SAMPLE in ${SAMPLES[@]}
+do
+  FQ1=$(ls $FASTQDIR/$SAMPLE | grep val_1.fq.gz)
+  FQ2=$(ls $FASTQDIR/$SAMPLE | grep val_2.fq.gz)
+  echo -e '#!/bin/sh' > $SCRIPTDIR/$SAMPLE\_Align.sh
+  echo "module load anaconda3 gcc java fastqc cutadapt trimgalore bwa samtools bwameth htslib methyldackel" >> $SCRIPTDIR/$SAMPLE\_Align.sh
+  echo "bwameth.py --reference $REF $FASTQDIR/$SAMPLE/$FQ1 $FASTQDIR/$SAMPLE/$FQ2 | samtools view -bS -F 4 > $BAMDIR/$SAMPLE.bam" >> $SCRIPTDIR/$SAMPLE\_Align.sh
+  sbatch -c 1 -t 4:00:00 -e $LOGDIR/$SAMPLE\_Align.%A.ERR -o $LOGDIR/$SAMPLE\_Align.%A.LOG $SCRIPTDIR/$SAMPLE\_Align.sh
+done
+
+-------------------------------------------------------------------------------------------------
+Step 8) Sort and index each bam file using the samtools program.
+This step is necessary for MethylDackel to assist with computing and speed up processing 
+-------------------------------------------------------------------------------------------------
+LOGDIR=$SCRATCH/Logs
+SCRIPTDIR=$SCRATCH/Scripts
+cd $SCRIPTDIR
+BAMDIR=$SCRATCH/trimmedAlignedBamsChr21
+BAMFILES=($(ls $BAMDIR | grep .bam | grep -v bam.bai | grep -v sorted))
+for BAMFILE in ${BAMFILES[@]}
+do
+  SAMPLENAME=$(echo $BAMFILE | sed 's/.bam//')
+  echo -e '#!/bin/sh' > $SCRATCH/Scripts/$SAMPLENAME\_sortAndIndex.sh
+  echo "module load anaconda3 gcc java fastqc cutadapt trimgalore bwa samtools bwameth htslib methyldackel" >> $SCRATCH/Scripts/$SAMPLENAME\_sortAndIndex.sh
+  echo "samtools sort $BAMDIR/$BAMFILE -o $BAMDIR/$SAMPLENAME\_sorted.bam" >> $SCRATCH/Scripts/$SAMPLENAME\_sortAndIndex.sh
+  echo "samtools index $BAMDIR/$SAMPLENAME\_sorted.bam" >> $SCRATCH/Scripts/$SAMPLENAME\_sortAndIndex.sh
+  sbatch -c 1 -t 1:00:00 -e $LOGDIR/sortIndex.%A.ERR -o $LOGDIR/sortIndex.%A.LOG $SCRATCH/Scripts/$SAMPLENAME\_sortAndIndex.sh
+done
+
+------------------------------------------------------------------------------------------------
+Step 9)Run MethylDackel to extract cytosine methylation counts
+MethylDackel will provide a BEDGraph file with chromosome number, start and end positions and 
+methylation status. 
+A score of 1 means all the cytosines in this location are methylated
+A score of 0 means none of the cytosines in this location are methylated
+Scores between 0 and 1 are are the fractions/ratios of cytosines methylated vs. Unmethylated
+  Eg; 0.5 means 1/2 the cytosines were methylated 
+------------------------------------------------------------------------------------------------
+
+cd $SCRIPTDIR
+BAMDIR=$SCRATCH/trimmedAlignedBamsChr21
+OUTMAIN=$SCRATCH/methylDackelOutputChr21
+BAMFILES=($(ls $BAMDIR | grep sorted | grep -v bai | grep bam))
+REF=$SCRATCH/Ref/Homo_sapiens.GRCh38.dna.chromosome.21.fa
+for BAMFILE in ${BAMFILES[@]}
+do
+  SAMPLENAME=$(echo $BAMFILE | sed 's/_sorted.bam//')
+  OUTDIR=$OUTMAIN/$SAMPLENAME
+  mkdir -p $OUTDIR
+  echo -e '#!/bin/sh' > $SCRIPTDIR/MethylDackel_$SAMPLENAME.sh
+  echo "module load anaconda3 gcc java fastqc cutadapt trimgalore bwa samtools bwameth htslib methyldackel" >> $SCRIPTDIR/MethylDackel_$SAMPLENAME.sh
+  echo "MethylDackel extract --fraction --mergeContext $REF $BAMDIR/$BAMFILE -o $OUTDIR/$SAMPLENAME\_" >> $SCRIPTDIR/MethylDackel_$SAMPLENAME.sh
+  sbatch -c 1 -t 1:00:00 -e $LOGDIR/Meth.%A.ERR -o $LOGDIR/Meth.%A.LOG $SCRIPTDIR/MethylDackel_$SAMPLENAME.sh
+done
+
+------------------------------------------------------------------------------------------------
+Step 10) Convert from bedGraph to bigwig using the bedGraphToBigWig program
+This step will compress the bedGraph file into binary and reduce the file size 
+------------------------------------------------------------------------------------------------
+---------------------------------------------------
+Step 10.1) Download the bedGraphToBigWig program
+---------------------------------------------------
+
+mkdir -p ~/software/bin
+cd ~/software/bin
+wget http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bedGraphToBigWig
+
+# Give yourself permission to run this program
+chmod u+x bedGraphToBigWig
+
+---------------------------------------------------
+Step 10.2) Fetch the chromosome sizes to be used 
+in the bedGraphToBigWig program using the 
+fetchChromSizes program
+---------------------------------------------------
+
+cd ~/software/bin
+wget http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/fetchChromSizes
+chmod u+x fetchChromSizes
+./fetchChromSizes hg38 > $SCRATCH/Ref/hg38.chromsizes
+
+---------------------------------------------------
+Step 10.3) Convert bedGraph To BigWig by executing 
+the program bedGraphToBigWig
+---------------------------------------------------
+salloc
+MAINDIR=$SCRATCH/methylDackelOutputChr21
+SAMPLES=($(ls $MAINDIR))
+for SAMPLE in ${SAMPLES[@]}
+do
+  BDG=$(ls $MAINDIR/$SAMPLE | grep bedGraph)
+  BW=$(echo $BDG | sed 's/bedGraph/bigWig/')
+  ~/software/bin/bedGraphToBigWig $MAINDIR/$SAMPLE/$BDG $SCRATCH/Ref/hg38.chromsizes $MAINDIR/$SAMPLE/$BW
+done
+
+
+------------------------------------------------------------------------------------------------
+Step 11) Identifying differentially methylated regions using the Metilene program
+------------------------------------------------------------------------------------------------
+
+---------------------------------------------------
+Step 11.1) Create the input file for metilene
+---------------------------------------------------
+
+MAINDIR=$SCRATCH/methylDackelOutputChr21
+SAMPLES=($(ls $MAINDIR))
+BGS=()
+HEADER=(chr start end)
+for SAMPLE in ${SAMPLES[@]}
+do
+  HEADER+=($SAMPLE)
+  BG=$(ls $MAINDIR/$SAMPLE | grep bedGraph)
+  BGS+=($MAINDIR/$SAMPLE/$BG)
+done
+module load gcc/7.3.0 bedtools
+echo -e ${HEADER[@]} | tr " " "\t" > $SCRATCH/methylDackelOutputChr21/mergedOutputs_unionbedg.bed
+bedtools unionbedg -i ${BGS[@]} >> $SCRATCH/methylDackelOutputChr21/mergedOutputs_unionbedg.bed
+
+---------------------------------------------------
+Step 11.2) Execute metilene program.
+Will output a bed file that contains the 
+chromosome, positions, qValue (for DMR), 
+mean Difference, Number of CpGs in the region etc.
+---------------------------------------------------
+
+module load metilene
+OUTDIR=$SCRATCH/metileneOutputChr21
+mkdir -p $OUTDIR
+echo -e "Chrom\tStart\tEnd\tqVal\tmeanDiff\tnumCpgs\tpMWU\tp2DKS\tmeanG1\tmeanG2" > $OUTDIR/MetileneDMR.bed
+metilene -a "H1-hESC" -b "leftVentricle" $SCRATCH/methylDackelOutputChr21/mergedOutputs_unionbedg.bed >> $OUTDIR/MetileneDMR.bed
+
+------------------------------------------------------------------------------------------------
+Step 12) Extract the significant (threshold p value <0.05) differentially methylated regions 
+Using RStudio. 
+------------------------------------------------------------------------------------------------
+
+---------------------------------------------------
+Step 12.1) Export the BED file produced by metilene 
+from cluster to local environment
+---------------------------------------------------
+scp lcl_uotmmg3003s2058@teach.scinet.utoronto.ca:/scratch/l/lcl_uotmmg3003/lcl_uotmmg3003s2058/metileneOutputChr21/MetileneDMR.bed .
+
+---------------------------------------------------
+Step 12.2) Download BED file and sort via pvalue
+in order from smallest to largest
+---------------------------------------------------
+data_metliene = read.csv("MetileneDMR.bed", header =T, sep="\t") #read the bed file 
+data_metliene = data_metliene[order(data_metliene$qVal, decreasing = FALSE),] #order the data based on qVal, from smallest to largest
+write.table(head(data_metliene, 10), "10SigDiffMeth.tsv", sep="\t") #get the first several lines of the data
