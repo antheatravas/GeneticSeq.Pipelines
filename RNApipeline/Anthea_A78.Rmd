@@ -1,0 +1,150 @@
+---
+title: "AntheaT_A78"
+output: html_document
+---
+
+```{r}
+
+library(edgeR)
+setwd("~/Desktop/GM/Assignments/Assignment 7&8")
+
+#downloading the .tsv file with all the read counts after processing via HISAT and HTSEQ
+#gene id names provided by course instructor
+gene_symbol_mapping <-  read.table(file="ENSG_ID2Name.txt", header=F, row.names=1)
+raw_count_data <-read.table(file="A7_gene_read_counts_table_all_final.tsv", sep="", header=TRUE, stringsAsFactors = F, row.names = 1)
+
+```
+
+```{r}
+
+dim(gene_symbol_mapping) #there are 58051 genes in the ENSG file
+dim(raw_count_data) 
+head(gene_symbol_mapping)
+head(raw_count_data)
+tail(gene_symbol_mapping)
+tail(raw_count_data)
+
+#there are 58056 genes in the counts file, meaning we need to filter out the last 5 rows which hold accessory information 
+
+```
+
+```{r}
+#here i am omitting the last 5 rows and checking that they have been deleted
+raw_count_data2 <- head(raw_count_data, -5)
+tail(raw_count_data2)
+```
+
+
+```{r}
+#We require at least 25% of samples to have count > 25 therefore we are filtering the raw counts
+
+quant <- apply(raw_count_data2, 1, quantile, 0.75)
+keep <- which((quant >= 25) == 1)
+filtered_raw_count_data <- raw_count_data2[keep,]
+
+#checking how many genes remain after filtering
+dim(filtered_raw_count_data)
+```
+
+```{r}
+#I am creating a DGEList object that will hold all the relevant data that is necessary for analysis through edgeR
+
+class = factor ( c (rep("untreated", 3), rep ("Dex", 3)))
+genes <- rownames(filtered_raw_count_data)
+gene_names <- gene_symbol_mapping[genes,1]
+A78_dgelist <- DGEList(counts=filtered_raw_count_data,
+                              genes=gene_names,
+                              group=class)
+
+```
+
+```{r}
+#I am now performing EdgeR Normalization on the DGElist created above using the calcNormFactors() function
+
+A78_dgelist <- calcNormFactors(A78_dgelist)
+A78_dgelist
+```
+
+
+```{r}
+#The MDS plot shows me that the untreated and Dex treated samples are clustering
+
+pdf("MDS Plot.pdf")
+plotMDS(A78_dgelist, col = c(rep("darkgreen", 3),rep("orange", 3)), cex = 0.60, ylab = "", xlab = "")
+title(xlab = "Leading logFC dim 1", ylab="Leading logFC dim 2", line=2)
+dev.off()
+
+```
+
+```{r}
+#Here we will tell edgeR to estimate the dispersion level of each gene in the samples. This is measuring the variance of expression in the samples of particular genes. 
+#This stat will be taken into account when determining the differentially expressed genes
+
+A78_dgelist <- estimateCommonDisp(A78_dgelist, verbose=TRUE)
+A78_dgelist <- estimateTagwiseDisp(A78_dgelist)
+
+
+```
+
+```{r}
+#the exact test will tell us if the gene was infact differentially expressed within the two groups (untreated and dex treated)
+A78_et <- exactTest(A78_dgelist, pair=c("untreated", "Dex"))
+head(A78_et$table)
+
+
+```
+
+```{r}
+#Because there are so many genes and thus many hypothesises, I need to do multiple hypothesis testing. I am using the decidetests with fdr and p.value of 0.05.This will give me the up/down significant DGEs
+
+A78_de <- decideTests(A78_et, method = "seperate", adjust.method = "fdr", p.value = 0.05)
+summary(A78_de)
+
+#output:
+#       Dex-untreated
+#Down             375
+#NotSig         11922
+#Up               548
+```
+
+```{r}
+#Plot the up & down regulated genes to visualize this relationship
+plotMD(A78_et)
+abline(h=c(-1, 1), col="blue")
+```
+
+Output differentially expressed genes in a Matrix of significantly DE genes. Use the cbind function to bind the following: Ensembl geneID from the gene variable, gene_names from the gene_names variable, the log10of the pvalue column from the tuorial_et variable, the log_fold_change from the et_tutorial variable 
+```{r}
+#Put the signdficant DEG in a new matrix and use cbind to put together all the important details (ensembl id, genenames, pvalue, lfc) The pvalue and lfc will come from the exact test matrix
+
+A78_de_gene_matrix = cbind(
+ genes,gene_names,
+ sprintf('%0.3f',log10(A78_et$table$PValue)), 
+ sprintf('%0.3f',A78_et$table$logFC)
+)[as.logical(A78_de),]
+colnames(A78_de_gene_matrix) = c("Gene", "Gene_Name", "Log10_Pvalue", "Log_fold_change")
+
+dim(A78_de_gene_matrix) #923   4
+#I notice that the lfc isnt sorted by absoulte value, and so we may be missing some important information
+
+#i will take the abs. value of lfc so i can extract the top ten DEG
+absoulte_lfc=abs(as.numeric(A78_de_gene_matrix[,4]))
+abs_A78_de_gene_matrix=A78_de_gene_matrix[order(absoulte_lfc, decreasing = T),]
+
+#these are the top 10 DEG
+head(abs_A78_de_gene_matrix, n=10)
+
+#i am using the cut off 0f 1.03 because in Himes et al.2014 the smallest absoulte lfc in the 316 DEG was 1.03 (Supplementary Table 3). Therefore, i will be filtering out all the gene that dont meet an absoulte lfc of 1.0
+cutoffmatrix=abs_A78_de_gene_matrix[abs(as.numeric(abs_A78_de_gene_matrix[,4])) > 1.0, ]
+
+dim (cutoffmatrix) # i see that our RNA seq analysis lead to 512 DEG. Which is 196 more than Himes et al. 2014. I will put this DEG list into the ven diagram to compare
+#there are 540 DGE after doing my pipeline which is alot larger than the 316 found in Himes et al. 
+
+write.table(cutoffmatrix[,2], file="cut.off", quote=FALSE, row.names=FALSE, sep="\t")
+
+```
+
+Reference:
+1. Himes, B. E. et al. RNA-Seq Transcriptome Profiling Identifies CRISPLD2 as a Glucocorticoid Responsive Gene that Modulates Cytokine Function in Airway Smooth Muscle Cells. PLOS ONE 9, e99625 (2014).
+
+
