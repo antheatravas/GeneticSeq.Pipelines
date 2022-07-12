@@ -1,0 +1,214 @@
+---
+title: "Assignment 3"
+output: html_notebook
+---
+PART 1 OF ASSIGNMENT 3-CMD
+```{r}
+setwd("~/Desktop/GM/Assignments/Assignment 3")
+library(biomaRt)
+library(VariantAnnotation)
+library("MafDb.TOPMed.freeze5.hg19")
+library("SNPlocs.Hsapiens.dbSNP144.GRCh37")
+
+#QUESTON1/2
+#i chose congenital muscular dystrophy for my gene panel of interest
+
+#load in the file including the CMD gene panel and extract the enxeml ID from there so we can query
+CMD.df = read.csv(file = 'Congenital muscular dystrophy.tsv', sep = '\t', header = TRUE)
+CMD.gene.symbol=CMD.df$EnsemblId.GRch37
+
+listMarts()
+# I selected the ENSEMBL_MART_ENSEMB biomart using grch37
+mart_37 = useMart(biomart = "ENSEMBL_MART_ENSEMBL", host = "grch37.ensembl.org")
+
+#created a dataset
+datasets_37 = listDatasets(mart_37)
+mart_37 <- useDataset(mart_37, dataset = "hsapiens_gene_ensembl") 
+
+#run to discover what is in each dataset using listattributes + listfilters
+attributes_37 <- listAttributes(mart_37)
+filters_37 <- listFilters(mart_37)
+```
+
+
+```{r}
+#QUESTION 3.1
+#creating a query that extracts all the coordinates for the genes listed in the CMD gene panel using their enseml gene id
+GeneCordinates <- getBM(
+  attributes = c("chromosome_name", "start_position", "end_position","ensembl_gene_id", "external_gene_name"),
+  filters = c("ensembl_gene_id"),
+  values = CMD.gene.symbol,
+  mart = mart_37)
+
+#ordering the results by chromosome
+GeneCordinates.sorted = GeneCordinates[order(GeneCordinates$chromosome_name, GeneCordinates$start_position), ]
+
+#panel.bed: results will be a bed file with genomic intervals
+write.table(GeneCordinates.sorted, "panel.bed",
+            sep = "\t", quote = F, row.names = F, col.names = T)
+
+
+#QUESTION 3.2
+#panel_exons.bed:  exons from all isoforms: chromosome, exon_start,  exon_end, exon_id
+panel2 <- getBM(
+  attributes = c("chromosome_name", "exon_chrom_start", "exon_chrom_end","ensembl_exon_id", "external_gene_name"),
+  filters = c("ensembl_gene_id"),
+  values = CMD.gene.symbol,
+  mart = mart_37)
+
+#sorted by chrom name and exon chrom start
+panel2.sorted = panel2[order(panel2$chromosome_name, panel2$exon_chrom_start), ]
+
+write.table(panel2.sorted, "panel_exons.bed",
+            sep = "\t", quote = F, row.names = F, col.names = T)
+
+#QUESTION 3.3
+#getting all the exons from the longest isoform of the longest coding gene (length based on the coding sequence of the transcript)
+panel3 <- getBM(
+  attributes = c("external_gene_name", "cds_length", "ensembl_gene_id", "ensembl_transcript_id"),
+  filters = c("ensembl_gene_id"),
+  values = CMD.gene.symbol,
+  mart = mart_37)
+#Creating code that will extract the ids of the longest isoform using cds_length and getting the data for tha transcriptt id
+NA.omitted.panel3=na.omit(panel3$cds_length[order(panel3$cds_length)])
+length.longest.transcript=max(NA.omitted.panel3)
+longest.transcript.info=subset(panel3, cds_length == length.longest.transcript)
+
+length.longest.transcript
+longest.transcript.info
+
+#now we have our query investigator (i.e transcript id) of the longest isoform stored in this variable
+longest.transcript.info.ID=longest.transcript.info$ensembl_transcript_id[1]
+
+#this will get the exons of the single longest coding isoform from the entire gene panel using the exon id
+panel3.2 <- getBM(
+  attributes = c("ensembl_exon_id","external_gene_name", "ensembl_gene_id"),
+  filters = c("ensembl_transcript_id"),
+  values = longest.transcript.info.ID,
+  mart = mart_37)
+
+#this will create a bed file and store it in my computer
+write.table(panel3.2, "panel_exons_longest_transcript.bed",
+            sep = "\t", quote = F, row.names = F, col.names = F)
+
+#QUESTION 4
+#here we are finding the shortest gene in the panel using transcript length. im using transcript length query to get the length and requesting the info using enseml gene id
+panel4 <- getBM(
+  attributes = c("external_gene_name", "transcript_length", "ensembl_transcript_id"),
+  filters = c("ensembl_gene_id"),
+  values = CMD.gene.symbol,
+  mart = mart_37)
+
+#This code will sort the transcript lengths for me and output the information for this gene
+length.shortest.transcript4=min(panel4$transcript_length[order(panel4$transcript_length)])
+longest.transcript.info4=subset(panel4, transcript_length == length.shortest.transcript4)
+shortgene=longest.transcript.info4$ensembl_transcript_id
+
+#both codes do the same thing which is to extract the coding sequence of the shortest gene
+panel4.2 <- getBM(
+  attributes = c("external_gene_name", "transcript_length", "ensembl_transcript_id", "coding"),
+  filters = c("ensembl_transcript_id"),
+  values = shortgene,
+  mart = mart_37)
+
+coding.seq <- getSequence(id=shortgene,
+            type="ensembl_transcript_id",
+            seqType="coding",
+            mart=mart_37)
+
+#creating a FASTA file for this seq and storing it as a file in my computer
+write("> DMD ENST00000448370", "shortest_gene.fasta")
+write(coding.seq$coding, "shortest_gene.fasta", append = T)
+```
+
+
+PART 2 OF ASSIGNMENT 3-personal genome project canada
+```{r}
+#Question 6
+#Here we will determine how many variants in the vcf pass the quality filter
+
+#first we need to read in the vcf file 
+vcf_file <- "PGPC_0001_S1.flt.subset.vcf"
+vcf <- readVcf(vcf_file, "hg19")
+
+# second we will bgzip and index the vcf file:
+bgzip("PGPC_0001_S1.flt.subset.vcf", "PGPC_0001_S1.flt.subset.vcf.gz", 
+      overwrite = T)
+indexTabix("PGPC_0001_S1.flt.subset.vcf.gz", format = "vcf")
+
+# then we will read the index into R:
+tbx <- TabixFile("PGPC_0001_S1.flt.subset.vcf.gz")
+tbx 
+
+#the code will output the total number of variants in the vcf file we are given just so i can compare them with the variants that passed
+rowRanges(vcf)
+length(rowRanges(vcf))
+
+#number of variants that passed
+variants_passed <- rowRanges(vcf)[rowRanges(vcf)$FILTER == "PASS", ]
+length(variants_passed) #42535
+
+paste ("There were", length(variants_passed), "variants that passed quality filters")
+
+#Question 7
+#for this question we will be filtering variants in the vcf file using the CMD gene panel we created earlier. And then we will filter again to choose only variants that passed
+
+#reading in the panel.bed we created in part 1
+genepanel <- read.table("panel.bed", sep = "\t", header=T)
+
+#This code using Granges will be used to store information for a set of genomic regions in the CMD gene panel  
+panel_region <- GRanges(seqnames = genepanel$chromosome_name, #chr name
+                        ranges = IRanges(start = genepanel$start_position, 
+                                         end = genepanel$end_position,
+                                         names = genepanel$external_gene_name))
+
+#Converts the format of chromosome name so that we have a chr infront of the chrom number
+seqlevelsStyle(panel_region) <- "UCSC"
+
+# now i will subset the vcf based on the gene panel_regions from the CMD file
+vcf_subset <- readVcf(tbx, "hg19", param = panel_region)
+
+# In order to save the output in a table, we will expand the vcf so each entry has as single ALT allele by using the expand function
+vcf_subset_expanded1 <- expand(vcf_subset)
+rowRanges(vcf_subset_expanded1) 
+
+#I am filtering such that only variants that passed will be saved
+vcf_subset_expanded=vcf_subset_expanded1[ rowRanges(vcf_subset_expanded1)$FILTER == "PASS",]
+rowRanges(vcf_subset_expanded) 
+
+# save subsetted expanded vcf to variants.tsv file:
+write.table(rowRanges(vcf_subset_expanded), file = "variants.tsv", 
+            sep = "\t", quote = F, row.names = F)
+
+#QUESTION 8
+#here we want to take the variants we found in the previous question and get the allele frequencies for each. We will use Topmed to do this and only keep variants that have an allele freq of less than 1%
+
+mafdb <- MafDb.TOPMed.freeze5.hg19
+snpdb <- SNPlocs.Hsapiens.dbSNP144.GRCh37
+
+CMD.variants = read.csv(file = 'variants.tsv', sep = '\t', header = TRUE)
+CMD.Grange=GRanges(seqnames = CMD.variants$seqnames,
+        ranges = IRanges(start= CMD.variants$start,
+                        end= CMD.variants$end,
+                        names=CMD.variants$paramRangeID
+                       )
+        )
+
+#this will evaluate the AF for the Grange object
+AF.gscore=gscores(mafdb, CMD.Grange)
+
+#this is just a check for me to see how many variants have AF < 1%
+AF=AF.gscore$AF
+length(na.omit(AF[AF<0.01]))
+
+#this is connecting the AF scores (regardless of our 1% threshold to the tsv we created in Q8.
+CMD.variants.MAF=cbind(CMD.variants, AF)
+
+#from here we will subset/filter out the variants that have an AF greater than 0.01
+CMD.variants.MAF.1percent=subset(CMD.variants.MAF, AF < 0.01)
+
+#creating another tsv file but including info about AF if the variant had a AF< 0.01
+write.table(CMD.variants.MAF.1percent, file = "variants_rare.tsv", 
+            sep = "\t", quote = F, row.names = F)
+
+```
